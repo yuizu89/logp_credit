@@ -201,7 +201,7 @@ def run_experiment(cfg: ExperimentConfig) -> List[SegmentRecord]:
                 true_answer_text=gt_solution if keep_text else None,
                 true_norm=true_norm,
                 prompt_text=prompt_text if keep_prompt else None,
-                decoded_text=decoded_full if keep_decoded else None,
+                decoded_text=assistant if keep_decoded else None,
                 think_text=think if cfg.run.save_think_rest else None,
                 rest_text=rest if cfg.run.save_think_rest else None,
                 pred_norm=pred_norm,
