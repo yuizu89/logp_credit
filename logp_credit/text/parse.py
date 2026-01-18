@@ -1,14 +1,20 @@
-# logp_credit/text/parse.py
-from __future__ import annotations
 import re
 from typing import Tuple
 
-
 def parse_think_and_rest(text: str) -> Tuple[str, str]:
-    m = re.search(r"<think>(.*?)</think>(.*)$", text, flags=re.S)
-    if m:
-        return m.group(1).strip(), m.group(2).strip()
-    m2 = re.search(r"(.*?)</think>(.*)$", text, flags=re.S)
-    if m2:
-        return m2.group(1).strip(), m2.group(2).strip()
+    # last <think>...</think>
+    ms = list(re.finditer(r"<think>(.*?)</think>", text, flags=re.S))
+    if ms:
+        m = ms[-1]
+        think = m.group(1).strip()
+        rest  = text[m.end():].strip()
+        return think, rest
+
+    # fallback: last </think>
+    j = text.rfind("</think>")
+    if j >= 0:
+        think = text[:j].strip()
+        rest  = text[j+len("</think>"):].strip()
+        return think, rest
+
     return "", text.strip()

@@ -79,7 +79,9 @@ def _generate_one(model, tok, prompt_ids: torch.Tensor, cfg: ExperimentConfig) -
         pad_token_id=pad_id,
         repetition_penalty=gen.repetition_penalty,
     )
-    return tok.decode(gen_ids[0], skip_special_tokens=True)
+    new_ids = gen_ids[:, prompt_ids.size(1):]          # ← 生成部分だけ
+    assistant = tok.decode(new_ids[0], skip_special_tokens=True).strip()
+    return assistant
 
 
 def _build_rollout_meta(
@@ -166,10 +168,10 @@ def run_experiment(cfg: ExperimentConfig) -> List[SegmentRecord]:
             seed = cfg.run.seed + (idx * 1000) + r
             _set_seed(seed)
 
-            decoded_full = _generate_one(model, tok, prompt_ids, cfg)
+            assistant = _generate_one(model, tok, prompt_ids, cfg)
 
             # Try to remove prompt text (best-effort) then parse think/rest
-            assistant = strip_prompt_from_decoded(decoded_full, prompt_text)
+            #assistant = strip_prompt_from_decoded(decoded_full, prompt_text)
             think, rest = parse_think_and_rest(assistant)
 
             # Prediction extraction
