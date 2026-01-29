@@ -19,6 +19,11 @@ def save_json(obj: Dict[str, Any], path: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, indent=2)
 
+def save_jsonl(rows: Iterable[Dict[str, Any]], path: str) -> None:
+    ensure_dir(os.path.dirname(path) or ".")
+    with open(path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 def records_to_dataframe(records: List[SegmentRecord]) -> pd.DataFrame:
     rows = [record_to_dict(r) for r in records]

@@ -15,7 +15,7 @@ from logp_credit.weight.assign import (
     build_segment_records_base_from_rollout,
     finalize_records_two_pass,
 )
-from logp_credit.io.save import ensure_dir, save_json, save_records_csv
+from logp_credit.io.save import ensure_dir, save_json, save_jsonl, save_records_csv
 
 # ---- you already have these in your snippet; put them in appropriate modules if you want ----
 from logp_credit.data.gsm8k import load_gsm8k
@@ -149,6 +149,7 @@ def run_experiment(cfg: ExperimentConfig) -> List[SegmentRecord]:
 
     # -------- main loop --------
     questions_map = {} # save questions
+    rollout_logs = []
     for qi, idx in enumerate(idxs):
         ex = ds[idx]
         q = ex[cfg.data.question_field]
@@ -197,6 +198,21 @@ def run_experiment(cfg: ExperimentConfig) -> List[SegmentRecord]:
             keep_decoded = cfg.run.save_decoded and (save_level in ("full", "light"))
             keep_prompt = cfg.run.save_prompt and (save_level == "full")
 
+            rollout_logs.append({
+                "run_id": run_id,
+                "question_idx": int(idx),
+                "rollout_id": int(r),
+                "seed": int(seed),
+                "correct": bool(correct),
+                "true_norm": true_norm,
+                "pred_norm": pred_norm,
+                "pred_extraction": pred_extraction,
+                "assistant": assistant,   # prompt以降のみ
+                "think": think,
+                "rest": rest,
+            })
+
+
             meta = _build_rollout_meta(
                 run_id=run_id,
                 dataset_name=cfg.data.dataset_name,
@@ -244,6 +260,7 @@ def run_experiment(cfg: ExperimentConfig) -> List[SegmentRecord]:
     # -------- save --------
     save_records_csv(final_records, os.path.join(out_dir, "segments.csv"))
     save_json(questions_map, os.path.join(out_dir, "questions.json"))
+    save_jsonl(rollout_logs, os.path.join(out_dir, "rollouts.jsonl"))
     # (optional) parquet is nicer for large runs
     # save_records_parquet(final_records, os.path.join(out_dir, "segments.parquet"))
 
