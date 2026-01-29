@@ -148,11 +148,11 @@ def run_experiment(cfg: ExperimentConfig) -> List[SegmentRecord]:
     all_base_records: List[SegmentRecord] = []
 
     # -------- main loop --------
+    questions_map = {} # save questions
     for qi, idx in enumerate(idxs):
         ex = ds[idx]
         q = ex[cfg.data.question_field]
         gt_solution = ex[cfg.data.answer_field]
-        questions_map = {}
 
         true_norm = extract_final_after_hashes(gt_solution)
         if true_norm is None:
