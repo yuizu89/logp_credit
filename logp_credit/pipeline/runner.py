@@ -160,6 +160,13 @@ def run_experiment(cfg: ExperimentConfig) -> List[SegmentRecord]:
             true_norm = extract_last_number(gt_solution)
         if true_norm is None:
             raise RuntimeError(f"Failed to extract GT final answer for idx={idx}")
+        
+        questions_map[str(idx)] = {
+            "question": q,
+            "true_norm": true_norm,
+            # 必要なら：
+            "gt_solution": gt_solution,
+        }
 
         prompt_text = build_prompt_text(tok, q, cfg)  # uses cfg.prompt
         prompt_ids = tok(prompt_text, return_tensors="pt", add_special_tokens=True).input_ids.to(model.device)
