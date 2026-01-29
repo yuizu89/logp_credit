@@ -137,7 +137,7 @@ class PromptConfig:
 
 @dataclass(frozen=True)
 class GenConfig:
-    max_new_tokens: int = 1024
+    max_new_tokens: int = 2048
     temperature: float = 0.6
     top_p: float = 0.95
     top_k: int = 20
