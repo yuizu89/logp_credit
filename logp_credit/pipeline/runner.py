@@ -152,6 +152,7 @@ def run_experiment(cfg: ExperimentConfig) -> List[SegmentRecord]:
         ex = ds[idx]
         q = ex[cfg.data.question_field]
         gt_solution = ex[cfg.data.answer_field]
+        questions_map = {}
 
         true_norm = extract_final_after_hashes(gt_solution)
         if true_norm is None:
@@ -235,6 +236,7 @@ def run_experiment(cfg: ExperimentConfig) -> List[SegmentRecord]:
 
     # -------- save --------
     save_records_csv(final_records, os.path.join(out_dir, "segments.csv"))
+    save_json(questions_map, os.path.join(out_dir, "questions.json"))
     # (optional) parquet is nicer for large runs
     # save_records_parquet(final_records, os.path.join(out_dir, "segments.parquet"))
 
