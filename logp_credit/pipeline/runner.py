@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional, Dict, Any
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -17,21 +17,23 @@ from logp_credit.weight.assign import (
 )
 from logp_credit.io.save import ensure_dir, save_json, save_jsonl, save_records_csv
 
-# ---- you already have these in your snippet; put them in appropriate modules if you want ----
 from logp_credit.data.gsm8k import load_gsm8k
-from logp_credit.prompt.build import build_prompt_text, strip_prompt_from_decoded
-from logp_credit.text.parse import parse_think_and_rest
-from logp_credit.text.extract import extract_final_after_hashes, extract_last_number
+from logp_credit.prompt.build import build_prompt_text
+from logp_credit.text.extract import (
+    extract_final_after_hashes,
+    extract_last_number,
+    extract_rationale_text,
+)
 
 
 def _now_run_id(prefix: str = "run") -> str:
-    # stable-ish run id
     ts = time.strftime("%Y%m%d_%H%M%S")
     return f"{prefix}_{ts}"
 
 
 def _set_seed(seed: int) -> None:
     import random
+
     random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -43,9 +45,12 @@ def _load_model_and_tokenizer(cfg: ExperimentConfig):
     device = model_cfg.resolved_device()
     torch_dtype = model_cfg.resolved_torch_dtype()
 
-    tok = AutoTokenizer.from_pretrained(model_cfg.model_name, trust_remote_code=model_cfg.trust_remote_code)
+    tok = AutoTokenizer.from_pretrained(
+        model_cfg.model_name,
+        trust_remote_code=model_cfg.trust_remote_code,
+    )
 
-    # common: Qwen系は pad 未設定のことがあるので eos を使う
+    # Qwen系は pad 未設定のことがあるので eos を使う
     if tok.pad_token_id is None and tok.eos_token_id is not None:
         tok.pad_token = tok.eos_token
 
@@ -66,20 +71,30 @@ def _load_model_and_tokenizer(cfg: ExperimentConfig):
 
 def _generate_one(model, tok, prompt_ids: torch.Tensor, cfg: ExperimentConfig) -> str:
     gen = cfg.gen
-    pad_id = tok.eos_token_id if gen.pad_token_id_strategy == "eos" else None
 
-    gen_ids = model.generate(
-        prompt_ids,
+    kwargs: Dict[str, Any] = dict(
         do_sample=gen.do_sample,
         temperature=gen.temperature,
         top_p=gen.top_p,
         top_k=gen.top_k,
         max_new_tokens=gen.max_new_tokens,
         use_cache=gen.use_cache,
-        pad_token_id=pad_id,
-        repetition_penalty=gen.repetition_penalty,
     )
-    new_ids = gen_ids[:, prompt_ids.size(1):]          # ← 生成部分だけ
+
+    # pad_token_id
+    if gen.pad_token_id_strategy == "eos":
+        if tok.eos_token_id is not None:
+            kwargs["pad_token_id"] = tok.eos_token_id
+    # else: omit pad_token_id
+
+    # repetition_penalty (omit if None)
+    if gen.repetition_penalty is not None:
+        kwargs["repetition_penalty"] = gen.repetition_penalty
+
+    gen_ids = model.generate(prompt_ids, **kwargs)
+
+    # 生成部分だけ取り出す（promptを丸ごと含めない）
+    new_ids = gen_ids[:, prompt_ids.size(1):]
     assistant = tok.decode(new_ids[0], skip_special_tokens=True).strip()
     return assistant
 
@@ -117,8 +132,8 @@ def _build_rollout_meta(
         true_norm=true_norm,
         prompt_text=prompt_text,
         decoded_text=decoded_text,
-        think_text=think_text,
-        rest_text=rest_text,
+        think_text=think_text,  # NOTE: enable_thinking=False運用では rationale_text を入れる
+        rest_text=rest_text,    # NOTE: answer_tail を入れる
         pred_norm=pred_norm,
         pred_extraction=pred_extraction,  # "hash" / "last_number" / "none"
         correct=correct,
@@ -135,7 +150,6 @@ def run_experiment(cfg: ExperimentConfig) -> List[SegmentRecord]:
     save_json(cfg.to_dict(), os.path.join(out_dir, "config.json"))
 
     model, tok = _load_model_and_tokenizer(cfg)
-
     ds = load_gsm8k(cfg.data.split)
 
     # decide which indices to run
@@ -148,56 +162,69 @@ def run_experiment(cfg: ExperimentConfig) -> List[SegmentRecord]:
     all_base_records: List[SegmentRecord] = []
 
     # -------- main loop --------
-    questions_map = {} # save questions
-    rollout_logs = []
+    questions_map: Dict[str, Any] = {}
+    rollout_logs: List[Dict[str, Any]] = []
+
     for qi, idx in enumerate(idxs):
         ex = ds[idx]
         q = ex[cfg.data.question_field]
         gt_solution = ex[cfg.data.answer_field]
 
+        # GT extraction (GSM8K is usually "#### <answer>")
         true_norm = extract_final_after_hashes(gt_solution)
         if true_norm is None:
-            # GSM8Kは通常ここは取れるが、念のため
             true_norm = extract_last_number(gt_solution)
         if true_norm is None:
             raise RuntimeError(f"Failed to extract GT final answer for idx={idx}")
-        
+
         questions_map[str(idx)] = {
             "question": q,
             "true_norm": true_norm,
-            # 必要なら：
             "gt_solution": gt_solution,
         }
 
         prompt_text = build_prompt_text(tok, q, cfg)  # uses cfg.prompt
-        prompt_ids = tok(prompt_text, return_tensors="pt", add_special_tokens=True).input_ids.to(model.device)
+        # NOTE: prompt_text is already a formatted string; keep as-is.
+        prompt_ids = tok(
+            prompt_text,
+            return_tensors="pt",
+            add_special_tokens=True,
+        ).input_ids.to(model.device)
 
-        # per question rollouts
+        # per-question rollouts
         for r in range(cfg.run.n_rollouts_per_question):
             seed = cfg.run.seed + (idx * 1000) + r
             _set_seed(seed)
 
             assistant = _generate_one(model, tok, prompt_ids, cfg)
 
-            # Try to remove prompt text (best-effort) then parse think/rest
-            #assistant = strip_prompt_from_decoded(decoded_full, prompt_text)
-            think, rest = parse_think_and_rest(assistant)
-
-            # Prediction extraction
-            pred_norm = extract_final_after_hashes(rest)
+            # ---- Prediction extraction (from whole assistant) ----
+            pred_norm = extract_final_after_hashes(assistant)
             pred_extraction = "hash"
             if pred_norm is None:
-                pred_norm = extract_last_number(rest)
+                pred_norm = extract_last_number(assistant)
                 pred_extraction = "last_number" if pred_norm is not None else "none"
 
             correct = (pred_norm == true_norm) if (pred_norm is not None) else False
 
-            # Save-level controls (keep it simple here; you can refine later)
+            # ---- Rationale extraction (remove final answer portion) ----
+            # enable_thinking=False: we build segments from rationale_text (answer excluded)
+            rs = extract_rationale_text(
+                assistant,
+                hash_prefix=cfg.prompt.hash_prefix,
+                strip_think_tags=True,
+            )
+            rationale_text = rs.rationale_text
+            answer_tail = rs.answer_tail
+            rationale_mode = rs.mode  # "hash_line" / "numeric_last_line" / "none" / "empty"
+
+            # Save-level controls
             save_level = cfg.run.save_level
             keep_text = (save_level == "full")
             keep_decoded = cfg.run.save_decoded and (save_level in ("full", "light"))
             keep_prompt = cfg.run.save_prompt and (save_level == "full")
 
+            # ---- Debug/inspection logs (jsonl) ----
             rollout_logs.append({
                 "run_id": run_id,
                 "question_idx": int(idx),
@@ -207,12 +234,14 @@ def run_experiment(cfg: ExperimentConfig) -> List[SegmentRecord]:
                 "true_norm": true_norm,
                 "pred_norm": pred_norm,
                 "pred_extraction": pred_extraction,
-                "assistant": assistant,   # prompt以降のみ
-                "think": think,
-                "rest": rest,
+                "assistant": assistant,
+                "rationale_text": rationale_text,
+                "answer_tail": answer_tail,
+                "rationale_mode": rationale_mode,
             })
 
-
+            # ---- Rollout meta (schema) ----
+            # NOTE: we reuse think_text/rest_text fields to avoid schema changes.
             meta = _build_rollout_meta(
                 run_id=run_id,
                 dataset_name=cfg.data.dataset_name,
@@ -226,19 +255,20 @@ def run_experiment(cfg: ExperimentConfig) -> List[SegmentRecord]:
                 true_norm=true_norm,
                 prompt_text=prompt_text if keep_prompt else None,
                 decoded_text=assistant if keep_decoded else None,
-                think_text=think if cfg.run.save_think_rest else None,
-                rest_text=rest if cfg.run.save_think_rest else None,
+                think_text=rationale_text if cfg.run.save_think_rest else None,
+                rest_text=answer_tail if cfg.run.save_think_rest else None,
                 pred_norm=pred_norm,
                 pred_extraction=pred_extraction,
                 correct=correct,
             )
 
-            # ---- contribution (prefix marginal) ----
+            # ---- contribution (prefix marginal), GT-targeted ----
+            # IMPORTANT: for enable_thinking=False we pass rationale_text here.
             contrib = compute_prefix_marginal(
                 model,
                 tok,
                 prompt_ids=prompt_ids,
-                think_text=think,
+                think_text=rationale_text,
                 true_answer_norm=true_norm,
                 prompt_cfg=cfg.prompt,
                 seg_cfg=cfg.seg,
@@ -261,7 +291,5 @@ def run_experiment(cfg: ExperimentConfig) -> List[SegmentRecord]:
     save_records_csv(final_records, os.path.join(out_dir, "segments.csv"))
     save_json(questions_map, os.path.join(out_dir, "questions.json"))
     save_jsonl(rollout_logs, os.path.join(out_dir, "rollouts.jsonl"))
-    # (optional) parquet is nicer for large runs
-    # save_records_parquet(final_records, os.path.join(out_dir, "segments.parquet"))
 
     return final_records
