@@ -98,28 +98,40 @@ class ModelConfig:
 
 @dataclass(frozen=True)
 class PromptConfig:
-    hash_prefix: str = "#### "     # NOTE: keep trailing space
+    # Former prompt/constants.py lives here.
+    hash_prefix: str = "#### "     # NOTE: keep trailing space as part of format
     think_open: str = "<think>\n"
     think_close: str = "</think>"
 
     placeholder: str = "[REMOVED]"
 
+    # If None, your prompt/build.py can generate a default system prompt.
     system_prompt: Optional[str] = None
 
     add_generation_prompt: bool = True
-    enable_thinking: bool = False   # ★ verl寄せ
+    enable_thinking: bool = True
 
     ensure_think_open: bool = False
     max_prompt_tail_check: int = 400
 
     def default_system_prompt(self) -> str:
+        """
+        Default system prompt aligned to your current build_prompt_text().
+        Kept here so that prompt/build.py can simply call cfg.prompt.default_system_prompt()
+        when cfg.prompt.system_prompt is None.
+        """
         hp = self.hash_prefix
         return (
             "You are a helpful assistant.\n"
             "Solve the problem step by step.\n"
-            f"Put your final answer on its own line in the format:\n{hp}<answer>\n"
-            "After you output the final answer line, output nothing else.\n"
-            "Do not include the final answer in any other place.\n"
+            f"Put your final answer on its own line in the format: \n{hp} <answer>.\n"
+            "Do NOT put the final answer inside <think>.\n"
+            "\n"
+            "Example:\n"
+            "<think>\n"
+            "Compute <a>% of <b> is <c>, so second song is <d>, total is <answer>.\n"
+            "</think>\n"
+            f"{hp} <answer>"
         )
 
 
