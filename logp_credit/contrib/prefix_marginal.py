@@ -8,8 +8,8 @@ import torch
 from logp_credit.config import PromptConfig, SegmentationConfig, ContributionConfig
 from logp_credit.contrib.common import ContribResult
 from logp_credit.text.segment import split_segments_by_period
-from logp_credit.model.kv import forward_append, 
-from logp_credit.model.scoring import score_answer_logprob, score_value_after_hash
+from logp_credit.model.kv import forward_append
+from logp_credit.model.scoring import score_value_after_hash
 
 
 def _truncate_segments(
@@ -40,14 +40,14 @@ def compute_prefix_marginal(
     contrib_cfg: ContributionConfig,
 ) -> ContribResult:
     """
-    Method 2 (prefix marginal), GT-targeted:
+    Method 2 (prefix marginal), GT-targeted, "1B" scoring:
 
-      scores[k] = log P( ans_text | prompt + think_open + prefix_k + think_close )
+      scores[k] = log P( value | prompt + think_open + prefix_k + think_close + "\\n#### " )
       deltas[i] = scores[i+1] - scores[i]
 
     Where:
       - scores[0] uses empty prefix (no segments).
-      - ans_text is built from GT: "\\n{hash_prefix}{true_answer_norm}"
+      - hash_prefix is conditioned (NOT scored), and only the value tokens are scored.
 
     Returns ContribResult with:
       - scores length = 1 + n_segments
@@ -64,44 +64,56 @@ def compute_prefix_marginal(
 
     # Segment
     segs = split_segments_by_period(think_text)
+    segs = [s for s in segs if s and s.strip()]
     segs, truncated = _truncate_segments(segs, seg_cfg.max_segments, seg_cfg.truncate_policy)
 
-    # Prepare tokens (once)
+    # Prepare tokens once
     open_ids = tok(prompt_cfg.think_open, return_tensors="pt", add_special_tokens=False).input_ids.to(device)
     close_ids = tok(prompt_cfg.think_close, return_tensors="pt", add_special_tokens=False).input_ids.to(device)
 
-    # GT answer text (VeRL/GSM8K-style marker)
-    # NOTE: prompt_cfg.hash_prefix includes trailing space by design (e.g., "#### ")
+    # For logging only (NOT used for scoring in 1B)
     ans_text = f"\n{prompt_cfg.hash_prefix}{true_answer_norm}"
-    ans_ids = tok(ans_text, return_tensors="pt", add_special_tokens=False).input_ids.to(device)
 
-    # 1) Build base context: prompt + think_open (KV cached)
+    # 1) Base context: prompt + think_open (KV cached)
     past, _ = forward_append(model, prompt_ids, past=None)
     past, _ = forward_append(model, open_ids, past=past)
 
-    # 2) scores[0]: empty prefix (no segments)
-    # score = log P(ans | prompt + think_open + think_close)
-    past_closed, last_closed = forward_append(model, close_ids, past=past)
-    scores: List[float] = [score_answer_logprob(model, past_closed, last_closed, ans_ids)]
+    # 2) scores[0]: empty prefix baseline
+    # context = prompt + think_open + think_close
+    past_closed, _ = forward_append(model, close_ids, past=past)
+    scores: List[float] = [
+        score_value_after_hash(
+            model,
+            tok,
+            ctx_past=past_closed,
+            true_answer_norm=true_answer_norm,
+            hash_prefix=prompt_cfg.hash_prefix,
+            device=device,
+        )
+    ]
 
-    # 3) prefix_i: append segments incrementally to past_inside (do NOT include close in the cached past)
+    # 3) prefix_i: append segments incrementally, then close and score
     past_inside = past
     for seg in segs:
         seg_ids = tok(" " + seg, return_tensors="pt", add_special_tokens=False).input_ids.to(device)
         past_inside, _ = forward_append(model, seg_ids, past=past_inside)
 
-        # close and score from this prefix
-        past_closed, last_closed = forward_append(model, close_ids, past=past_inside)
-        scores.append(score_answer_logprob(model, past_closed, last_closed, ans_ids))
+        past_closed, _ = forward_append(model, close_ids, past=past_inside)
+        scores.append(
+            score_value_after_hash(
+                model,
+                tok,
+                ctx_past=past_closed,
+                true_answer_norm=true_answer_norm,
+                hash_prefix=prompt_cfg.hash_prefix,
+                device=device,
+            )
+        )
 
     # 4) deltas
     deltas = [scores[i] - scores[i - 1] for i in range(1, len(scores))]
 
-    # If caller wants to *not* keep empty prefix, we can drop it here,
-    # but keeping it is strongly recommended for analysis and sanity checks.
     if not contrib_cfg.include_empty_prefix:
-        # Drop scores[0]; deltas still correspond to segs but now relative to dropped baseline is ambiguous.
-        # We keep behavior explicit: don't drop unless you truly know what you're doing.
         raise ValueError(
             "include_empty_prefix=False is not supported for prefix_marginal, because deltas "
             "are defined relative to the empty-prefix baseline."
@@ -116,5 +128,5 @@ def compute_prefix_marginal(
         ans_text=ans_text,
         scores=scores,
         deltas=deltas,
-        notes=None,
+        notes="score_value_after_hash (1B)",
     )
