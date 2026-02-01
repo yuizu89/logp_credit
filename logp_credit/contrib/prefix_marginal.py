@@ -8,7 +8,8 @@ import torch
 from logp_credit.config import PromptConfig, SegmentationConfig, ContributionConfig
 from logp_credit.contrib.common import ContribResult
 from logp_credit.text.segment import split_segments_by_period
-from logp_credit.model.kv import forward_append, score_answer_logprob
+from logp_credit.model.kv import forward_append, 
+from logp_credit.model.scoring import score_answer_logprob, score_value_after_hash
 
 
 def _truncate_segments(
