@@ -5,8 +5,16 @@ import argparse
 from typing import List, Optional
 
 from logp_credit.config import (
-    ExperimentConfig, ModelConfig, GenConfig, DataConfig, RunConfig,
-    ContributionConfig, NormalizationConfig, SoftmaxConfig, RewardConfig,
+    ExperimentConfig,
+    ModelConfig,
+    GenConfig,
+    DataConfig,
+    RunConfig,
+    PromptConfig,  # <-- add
+    ContributionConfig,
+    NormalizationConfig,
+    SoftmaxConfig,
+    RewardConfig,
 )
 from logp_credit.pipeline.runner import run_experiment
 
@@ -15,6 +23,26 @@ def _parse_int_list(s: Optional[str]) -> Optional[List[int]]:
     if s is None or s.strip() == "":
         return None
     return [int(x) for x in s.split(",") if x.strip()]
+
+
+def _unescape_cli_string(s: str) -> str:
+    """
+    Make CLI strings convenient:
+      - converts '\\n' -> '\n', '\\t' -> '\t', '\\r' -> '\r'
+      - leaves other characters as-is
+
+    Example:
+      --hash_prefix "Final answer:\\n#### "
+        -> "Final answer:\n#### "
+    """
+    if s is None:
+        return s
+    # minimal unescape (safe + predictable)
+    return (
+        s.replace("\\n", "\n")
+         .replace("\\t", "\t")
+         .replace("\\r", "\r")
+    )
 
 
 def parse_args():
@@ -35,6 +63,19 @@ def parse_args():
     p.add_argument("--top_p", type=float, default=0.95)
     p.add_argument("--top_k", type=int, default=20)
 
+    # prompt / scoring marker
+    p.add_argument(
+        "--hash_prefix",
+        type=str,
+        default=None,
+        help=(
+            "Override PromptConfig.hash_prefix. "
+            "Use \\n for newline. Example: --hash_prefix \"Final answer:\\n#### \"\n"
+            "NOTE: keep trailing space if you want (e.g., '#### '). "
+            "Extraction still relies on '####' in outputs."
+        ),
+    )
+
     # seed / output
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--out_dir", type=str, default="runs/logp_credit")
@@ -52,6 +93,13 @@ def parse_args():
 def main():
     args = parse_args()
     idxs = _parse_int_list(args.idxs)
+
+    # prompt override
+    if args.hash_prefix is None or args.hash_prefix.strip() == "":
+        prompt_cfg = PromptConfig()
+    else:
+        hp = _unescape_cli_string(args.hash_prefix)
+        prompt_cfg = PromptConfig(hash_prefix=hp)
 
     cfg = ExperimentConfig(
         model=ModelConfig(
@@ -81,6 +129,7 @@ def main():
             save_think_rest=args.save_think_rest,
             save_prompt=args.save_prompt,
         ),
+        prompt=prompt_cfg,  # <-- add
         contrib=ContributionConfig(method="prefix"),
         norm=NormalizationConfig(scope="rollout", method="zscore", clip=None, separate_correctness=False),
         softmax=SoftmaxConfig(tau=1.0, stable=True, mask_invalid=True),
