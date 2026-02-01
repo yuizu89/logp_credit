@@ -69,6 +69,11 @@ class SegmentRecord:
       - For loo method:
           full_score/loo are populated.
           score_prev/score_curr/delta are None (or optionally could be filled).
+
+    Token-window selection:
+      - seg_token_len / seg_token_start are used to build token-windows.
+      - window_id is computed as seg_token_start // window_tokens (per rollout).
+      - is_active indicates whether the segment participates in softmax/reward.
     """
 
     # -------- identity / keys --------
@@ -94,14 +99,24 @@ class SegmentRecord:
     # -------- segment content --------
     seg_text: str
 
+    # -------- NEW: token-window bookkeeping --------
+    # Token length of this segment (in tokenizer space). Optional for backward compatibility.
+    seg_token_len: Optional[int] = None
+    # Token start offset of this segment within the rollout (cumulative sum of seg_token_len). Optional.
+    seg_token_start: Optional[int] = None
+    # Token-window id within rollout (computed from seg_token_start // window_tokens). Optional.
+    window_id: Optional[int] = None
+    # Whether this segment is selected (top-k) and participates in softmax/reward.
+    is_active: bool = True
+
     # -------- target answer representation --------
-    ans_text: str             # e.g. "\n#### 13"
-    true_norm: str
+    ans_text: str = ""        # e.g. "\n#### 13" (logging)
+    true_norm: str = ""
 
     # -------- rollout outcome (duplicated per row for convenience) --------
-    correct: bool
-    pred_norm: Optional[str]
-    pred_extraction: PredExtraction
+    correct: bool = False
+    pred_norm: Optional[str] = None
+    pred_extraction: PredExtraction = "none"
 
     # -------- contribution scores (GT logP) --------
     # Prefix method:
@@ -114,7 +129,7 @@ class SegmentRecord:
     loo: Optional[float] = None
 
     # -------- softmax input / weights --------
-    # x_raw: after sign rule (incorrect uses -delta/-loo), before normalization.
+    # x_raw: before normalization (typically delta or loo, with any pre-processing).
     x_raw: float = 0.0
     # x_norm: normalized (and optional clipped) value used for softmax.
     x_norm: float = 0.0

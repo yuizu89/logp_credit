@@ -52,6 +52,7 @@ def compute_prefix_marginal(
     Returns ContribResult with:
       - scores length = 1 + n_segments
       - deltas length = n_segments
+      - seg_token_lens length = n_segments
     """
     if contrib_cfg.score_target != "gt":
         raise ValueError("compute_prefix_marginal is GT-only by design (score_target must be 'gt').")
@@ -92,10 +93,15 @@ def compute_prefix_marginal(
         )
     ]
 
+    # NEW: per-segment token lengths (aligned with segs)
+    seg_token_lens: List[int] = []
+
     # 3) prefix_i: append segments incrementally, then close and score
     past_inside = past
     for seg in segs:
         seg_ids = tok(" " + seg, return_tensors="pt", add_special_tokens=False).input_ids.to(device)
+        seg_token_lens.append(int(seg_ids.size(1)))  # <-- NEW
+
         past_inside, _ = forward_append(model, seg_ids, past=past_inside)
 
         past_closed, _ = forward_append(model, close_ids, past=past_inside)
@@ -128,5 +134,6 @@ def compute_prefix_marginal(
         ans_text=ans_text,
         scores=scores,
         deltas=deltas,
+        seg_token_lens=seg_token_lens,           # <-- NEW
         notes="score_value_after_hash (1B)",
     )

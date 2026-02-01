@@ -196,6 +196,20 @@ class SegmentationConfig:
         if self.max_segments is not None and self.max_segments <= 0:
             raise ValueError(f"max_segments must be > 0, got {self.max_segments}")
 
+        
+@dataclass(frozen=True)
+class WindowSelectConfig:
+    enabled: bool = True
+    window_tokens: int = 64
+    top_k_per_window: int = 1
+    preflip_select_metric: Literal["delta"] = "delta"
+
+    def __post_init__(self):
+        if self.window_tokens <= 0:
+            raise ValueError(f"window_tokens must be > 0, got {self.window_tokens}")
+        if self.top_k_per_window <= 0:
+            raise ValueError(f"top_k_per_window must be > 0, got {self.top_k_per_window}")
+
 
 @dataclass(frozen=True)
 class ContributionConfig:
@@ -316,6 +330,7 @@ class ExperimentConfig:
     gen: GenConfig = field(default_factory=GenConfig)
     data: DataConfig = field(default_factory=DataConfig)
     seg: SegmentationConfig = field(default_factory=SegmentationConfig)
+    window: WindowSelectConfig = field(default_factory=WindowSelectConfig)
     contrib: ContributionConfig = field(default_factory=ContributionConfig)
     norm: NormalizationConfig = field(default_factory=NormalizationConfig)
     softmax: SoftmaxConfig = field(default_factory=SoftmaxConfig)
